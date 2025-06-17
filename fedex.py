@@ -32,17 +32,6 @@ class Fedex():
         self.ssl_context = ssl.create_default_context()
         self.ssl_context.check_hostname = False
         self.ssl_context.verify_mode = ssl.CERT_NONE
-        
-        # Create connector with SSL and connection settings
-        self.connector = TCPConnector(
-            ssl=self.ssl_context,
-            limit=100,
-            limit_per_host=10,
-            ttl_dns_cache=300,
-            use_dns_cache=True,
-            keepalive_timeout=30,
-            enable_cleanup_closed=True
-        )
 
     async def save_track_data(self, track_numbers: Set[str], proxy_path: Optional[str] = None, 
                             filename: str = None, one_string_filename: str = None, 
@@ -131,9 +120,20 @@ class Fedex():
             connect=self.connect_timeout
         )
         
+        # Create a new connector for this session to avoid reuse issues
+        connector = TCPConnector(
+            ssl=self.ssl_context,
+            limit=100,
+            limit_per_host=10,
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+            keepalive_timeout=30,
+            enable_cleanup_closed=True
+        )
+        
         async with ClientSession(
             headers=headers, 
-            connector=self.connector,
+            connector=connector,
             timeout=timeout
         ) as session:
             if len(track_numbers) > 40:
@@ -190,11 +190,6 @@ class Fedex():
                 for track in track_numbers:
                     out.write(f"{track}\n")
         await asyncio.to_thread(sync)
-
-    async def close(self):
-        """Close the connector to free resources"""
-        if self.connector and not self.connector.closed:
-            await self.connector.close()
 
 class APITooManyElements(Exception):
     def __init__(self, message):
