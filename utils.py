@@ -28,17 +28,25 @@ class Utils:
                     return None
                     
                 proxy = random.choice(proxies)
-                return proxy
-                splited = proxy.split(':', maxsplit=5)
                 
-                if splited[0] != 'http':
-                    raise UnsupportedProxyType("Unsupported proxy type. Currently, only http is supported.")
+                # Validate and format proxy if needed
+                if '://' not in proxy:
+                    # Assume http if no protocol specified
+                    proxy = f"http://{proxy}"
                 
-                if len(splited) == 5:
-                    return f"{splited[0]}://{splited[3]}:{splited[4]}@{splited[1]}:{splited[2]}"
-                elif len(splited) == 3:
-                    return f"{splited[0]}:{splited[1]}:{splited[2]}"
-                else:
+                # Basic proxy validation
+                try:
+                    splited = proxy.split(':', maxsplit=5)
+                    if len(splited) >= 3:
+                        protocol = splited[0]
+                        if protocol not in ['http', 'https']:
+                            logger.warning(f"Unsupported proxy protocol: {protocol}, using as-is")
+                        return proxy
+                    else:
+                        logger.warning(f"Invalid proxy format: {proxy}")
+                        return proxy
+                except Exception as parse_error:
+                    logger.warning(f"Error parsing proxy {proxy}: {parse_error}, using as-is")
                     return proxy
                     
         except Exception as e:

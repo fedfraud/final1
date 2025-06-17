@@ -2,8 +2,9 @@ import logging
 import asyncio
 import time
 import random
+import ssl
 from typing import Optional, Dict, List, Set
-from aiohttp import ClientSession, ClientError
+from aiohttp import ClientSession, ClientError, ClientTimeout, TCPConnector, ClientConnectorError, ClientSSLError, ServerDisconnectedError
 from aiohttp.client_exceptions import ClientProxyConnectionError, ClientHttpProxyError
 from utils import Utils
 from logger import *
@@ -15,6 +16,30 @@ class Fedex():
         self.utils = Utils()
         self.request_timeout = 30
         self.max_retries = 100
+        self.retry_base_delay = 1
+        self.retry_max_delay = 60
+        
+        # Create SSL context with fallback settings
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Connector will be created when needed
+        self.connector = None
+    
+    def _get_connector(self) -> TCPConnector:
+        """Get or create the TCP connector"""
+        if self.connector is None:
+            self.connector = TCPConnector(
+                ssl=self.ssl_context,
+                limit=100,
+                limit_per_host=30,
+                ttl_dns_cache=300,
+                use_dns_cache=True,
+                keepalive_timeout=30,
+                enable_cleanup_closed=True
+            )
+        return self.connector
 
     async def save_track_data(self, track_numbers: Set[str], proxy_path: Optional[str] = None, 
                             filename: str = None, one_string_filename: str = None, 
@@ -32,18 +57,42 @@ class Fedex():
                     not_found_filename
                 )
             except (ClientProxyConnectionError, ClientHttpProxyError, APIRateLimit) as e:
-                logger.warning(f"Error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                logger.warning(f"Proxy/Rate limit error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
                 last_exception = e
                 retry_count += 1
-                await asyncio.sleep(1)
+                await self._exponential_backoff(retry_count)
+            except (ClientSSLError, ssl.SSLError) as e:
+                logger.warning(f"SSL connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                last_exception = e
+                retry_count += 1
+                await self._exponential_backoff(retry_count)
+            except (ClientConnectorError, ServerDisconnectedError) as e:
+                logger.warning(f"Network connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                last_exception = e
+                retry_count += 1
+                await self._exponential_backoff(retry_count)
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Request timeout (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                last_exception = e
+                retry_count += 1
+                await self._exponential_backoff(retry_count)
             except Exception as e:
                 logger.error(f"Unexpected error processing tracks: {str(e)}")
                 await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
                 return {}
 
-        logger.error(f"Failed after {self.max_retries} attempts. Last error: {str(last_exception)}")
+        logger.error(f"Failed to process tracks after {self.max_retries} attempts. Last error: {str(last_exception)}")
+        logger.info(f"Saving {len(track_numbers)} tracks to unchecked file due to persistent errors")
         await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
         return {}
+    
+    async def _exponential_backoff(self, retry_count: int) -> None:
+        """Implement exponential backoff with jitter"""
+        delay = min(self.retry_base_delay * (2 ** retry_count), self.retry_max_delay)
+        jitter = random.uniform(0.1, 0.3) * delay
+        total_delay = delay + jitter
+        logger.debug(f"Waiting {total_delay:.2f} seconds before retry")
+        await asyncio.sleep(total_delay)
 
     async def _process_tracks(self, track_numbers: Set[str], proxy_path: str, filename: str, 
                             one_string_filename: str, unchecked_string_filename: str, 
@@ -75,7 +124,14 @@ class Fedex():
             "last-event-id": last_id,
             "Cookie": f"_yq_bid={cookie};",
         }
-        async with ClientSession(headers=headers) as session:
+        # Create timeout configuration
+        timeout = ClientTimeout(total=self.request_timeout, connect=10, sock_read=15)
+        
+        async with ClientSession(
+            headers=headers, 
+            connector=self._get_connector(), 
+            timeout=timeout
+        ) as session:
             if len(track_numbers) > 40:
                 raise APITooManyElements("API too many elements exception")
             
@@ -127,6 +183,11 @@ class Fedex():
                 for track in track_numbers:
                     out.write(f"{track}\n")
         await asyncio.to_thread(sync)
+    
+    async def close(self):
+        """Close the connector and cleanup resources"""
+        if hasattr(self, 'connector') and self.connector:
+            await self.connector.close()
 
 class APITooManyElements(Exception):
     def __init__(self, message):
