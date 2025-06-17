@@ -150,10 +150,8 @@ class Fedex():
                     
             except asyncio.TimeoutError:
                 raise ClientError("Request timed out")
-            except ClientConnectorError as e:
-                raise ClientConnectorError(f"Connection error: {str(e)}")
-            except ClientOSError as e:
-                raise ClientOSError(f"OS error during connection: {str(e)}")
+            except (ClientConnectorError, ClientOSError) as e:
+                raise ClientError(f"Connection error: {str(e)}")
     
     async def cleanup(self):
         """Clean up resources."""
