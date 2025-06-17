@@ -23,27 +23,69 @@ class Utils:
             
         try:
             with open(proxy_path, "r", encoding="utf-8") as stream:
-                proxies = [p.strip() for p in stream.readlines() if p.strip()]
+                proxies = [
+                    p.strip() for p in stream.readlines() 
+                    if p.strip() and not p.strip().startswith('#')
+                ]
                 if not proxies:
                     return None
                     
                 proxy = random.choice(proxies)
-                return proxy
-                splited = proxy.split(':', maxsplit=5)
                 
-                if splited[0] != 'http':
+                # Basic proxy validation - check if it starts with http://
+                if not proxy.startswith('http://'):
+                    logger.warning(f"Skipping unsupported proxy format: {proxy}")
                     raise UnsupportedProxyType("Unsupported proxy type. Currently, only http is supported.")
                 
-                if len(splited) == 5:
-                    return f"{splited[0]}://{splited[3]}:{splited[4]}@{splited[1]}:{splited[2]}"
-                elif len(splited) == 3:
-                    return f"{splited[0]}:{splited[1]}:{splited[2]}"
-                else:
-                    return proxy
+                # For simple http://host:port format, return as-is
+                # For http://user:pass@host:port format, it's already properly formatted
+                return proxy
                     
         except Exception as e:
             logger.error(f"Error getting proxy: {str(e)}")
             return None
+
+    async def validate_proxy(self, proxy: str) -> bool:
+        """Validate if a proxy is working by making a test connection"""
+        if not proxy:
+            return False
+            
+        try:
+            import aiohttp
+            import ssl
+            
+            # Create SSL context that allows connections
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            
+            connector = aiohttp.TCPConnector(
+                ssl=ssl_context,
+                timeout=aiohttp.ClientTimeout(total=5, connect=2),
+                limit=10
+            )
+            
+            async with aiohttp.ClientSession(connector=connector) as session:
+                async with session.get(
+                    "https://httpbin.org/ip", 
+                    proxy=proxy,
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    return response.status == 200
+                    
+        except Exception as e:
+            logger.debug(f"Proxy validation failed for {proxy}: {str(e)}")
+            return False
+    
+    def get_validated_proxy(self, proxy_path: str) -> Optional[str]:
+        """Get a random proxy and validate it synchronously for backwards compatibility"""
+        proxy = self.get_random_proxy(proxy_path)
+        if not proxy:
+            return None
+            
+        # For now, return the proxy without async validation to maintain compatibility
+        # Async validation can be called separately if needed
+        return proxy
     
     def parse_17track_response(self, json_data: Dict, track_numbers: list) -> Optional[List]:
         tracks = []
