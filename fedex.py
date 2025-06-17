@@ -2,9 +2,10 @@ import logging
 import asyncio
 import time
 import random
+import ssl
 from typing import Optional, Dict, List, Set
-from aiohttp import ClientSession, ClientError
-from aiohttp.client_exceptions import ClientProxyConnectionError, ClientHttpProxyError
+from aiohttp import ClientSession, ClientError, TCPConnector, ClientTimeout
+from aiohttp.client_exceptions import ClientProxyConnectionError, ClientHttpProxyError, ClientConnectorError
 from utils import Utils
 from logger import *
 from generate import generate_last_id, get_time_offset
@@ -15,6 +16,8 @@ class Fedex():
         self.utils = Utils()
         self.request_timeout = 30
         self.max_retries = 100
+        self.base_delay = 1  # Base delay for exponential backoff
+        self.max_delay = 60  # Maximum delay between retries
 
     async def save_track_data(self, track_numbers: Set[str], proxy_path: Optional[str] = None, 
                             filename: str = None, one_string_filename: str = None, 
@@ -31,11 +34,16 @@ class Fedex():
                     unchecked_string_filename, 
                     not_found_filename
                 )
-            except (ClientProxyConnectionError, ClientHttpProxyError, APIRateLimit) as e:
+            except (ClientProxyConnectionError, ClientHttpProxyError, ClientConnectorError, APIRateLimit) as e:
                 logger.warning(f"Error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
                 last_exception = e
                 retry_count += 1
-                await asyncio.sleep(1)
+                
+                # Exponential backoff with jitter
+                delay = min(self.base_delay * (2 ** retry_count), self.max_delay)
+                jitter = random.uniform(0, delay * 0.1)  # Add up to 10% jitter
+                await asyncio.sleep(delay + jitter)
+                
             except Exception as e:
                 logger.error(f"Unexpected error processing tracks: {str(e)}")
                 await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
@@ -75,7 +83,30 @@ class Fedex():
             "last-event-id": last_id,
             "Cookie": f"_yq_bid={cookie};",
         }
-        async with ClientSession(headers=headers) as session:
+        
+        # Create SSL context with certificate verification disabled for proxies
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Create TCP connector with connection pooling and SSL context
+        connector = TCPConnector(
+            limit=100,  # Total connection pool size
+            limit_per_host=30,  # Max connections per host
+            keepalive_timeout=60,  # Keep connections alive for 60 seconds
+            enable_cleanup_closed=True,  # Enable cleanup of closed connections
+            ssl=ssl_context
+        )
+        
+        # Create timeout configuration
+        timeout = ClientTimeout(
+            total=self.request_timeout,  # Total timeout
+            connect=10,  # Connection timeout
+            sock_read=15,  # Socket read timeout
+            sock_connect=10  # Socket connect timeout
+        )
+        
+        async with ClientSession(headers=headers, connector=connector, timeout=timeout) as session:
             if len(track_numbers) > 40:
                 raise APITooManyElements("API too many elements exception")
             
@@ -107,6 +138,8 @@ class Fedex():
                     
             except asyncio.TimeoutError:
                 raise ClientError("Request timed out")
+            except ClientConnectorError as e:
+                raise ClientProxyConnectionError(f"Connection error: {str(e)}")
                 
     async def _save_unchecked_tracks(self, track_numbers: Set[str], filename: str = 'unchecked.txt'):
         if not track_numbers:
