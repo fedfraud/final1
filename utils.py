@@ -28,17 +28,27 @@ class Utils:
                     return None
                     
                 proxy = random.choice(proxies)
-                return proxy
                 splited = proxy.split(':', maxsplit=5)
                 
-                if splited[0] != 'http':
-                    raise UnsupportedProxyType("Unsupported proxy type. Currently, only http is supported.")
+                # Check if it's already a formatted proxy URL (starts with http://)
+                if proxy.startswith('http://') or proxy.startswith('https://'):
+                    return proxy
                 
-                if len(splited) == 5:
-                    return f"{splited[0]}://{splited[3]}:{splited[4]}@{splited[1]}:{splited[2]}"
-                elif len(splited) == 3:
-                    return f"{splited[0]}:{splited[1]}:{splited[2]}"
+                # Handle different proxy formats:
+                # Format 1: http:host:port:user:pass (5 parts)
+                # Format 2: http:host:port (3 parts) 
+                # Format 3: host:port (2 parts, assume http)
+                if len(splited) == 5 and splited[0] == 'http':
+                    # http:host:port:user:pass -> http://user:pass@host:port
+                    return f"http://{splited[3]}:{splited[4]}@{splited[1]}:{splited[2]}"
+                elif len(splited) == 3 and splited[0] == 'http':
+                    # http:host:port -> http://host:port
+                    return f"http://{splited[1]}:{splited[2]}"
+                elif len(splited) == 2:
+                    # host:port -> http://host:port
+                    return f"http://{splited[0]}:{splited[1]}"
                 else:
+                    # Return as-is for any other format (including malformed)
                     return proxy
                     
         except Exception as e:
