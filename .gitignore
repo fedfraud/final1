@@ -1,0 +1,29 @@
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Log files
+logs/
+*.log
+
+# Temp files
+tmp/
+.tmp/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Output files
+*.txt
+!requirements*.txt
+
+# Virtual environments
+venv/
+env/
+.env

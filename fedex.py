@@ -2,9 +2,10 @@ import logging
 import asyncio
 import time
 import random
+import ssl
 from typing import Optional, Dict, List, Set
-from aiohttp import ClientSession, ClientError
-from aiohttp.client_exceptions import ClientProxyConnectionError, ClientHttpProxyError
+from aiohttp import ClientSession, ClientError, TCPConnector, ClientTimeout
+from aiohttp.client_exceptions import ClientProxyConnectionError, ClientHttpProxyError, ClientConnectorError, ClientOSError
 from utils import Utils
 from logger import *
 from generate import generate_last_id, get_time_offset
@@ -15,12 +16,37 @@ class Fedex():
         self.utils = Utils()
         self.request_timeout = 30
         self.max_retries = 100
+        self.base_retry_delay = 1
+        self.max_retry_delay = 60
+        
+        # Create SSL context that doesn't verify certificates for proxy usage
+        self.ssl_context = ssl.create_default_context()
+        self.ssl_context.check_hostname = False
+        self.ssl_context.verify_mode = ssl.CERT_NONE
+        
+        # Create TCP connector with connection pooling
+        self.connector = TCPConnector(
+            limit=100,  # Total connection pool size
+            limit_per_host=20,  # Max connections per host
+            ttl_dns_cache=300,  # DNS cache TTL
+            use_dns_cache=True,
+            ssl=self.ssl_context,
+            enable_cleanup_closed=True
+        )
+        
+        # Create timeout configuration
+        self.timeout = ClientTimeout(
+            total=self.request_timeout,
+            connect=10,  # Connection timeout
+            sock_read=20  # Socket read timeout
+        )
 
     async def save_track_data(self, track_numbers: Set[str], proxy_path: Optional[str] = None, 
                             filename: str = None, one_string_filename: str = None, 
                             unchecked_string_filename: str = None, not_found_filename: str = None) -> Dict:
         retry_count = 0
         last_exception = None
+        
         while retry_count < self.max_retries:
             try:
                 return await self._process_tracks(
@@ -31,11 +57,22 @@ class Fedex():
                     unchecked_string_filename, 
                     not_found_filename
                 )
-            except (ClientProxyConnectionError, ClientHttpProxyError, APIRateLimit) as e:
-                logger.warning(f"Error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+            except (ClientProxyConnectionError, ClientHttpProxyError, APIRateLimit, 
+                    ClientConnectorError, ClientOSError, asyncio.TimeoutError) as e:
+                
+                # Calculate exponential backoff delay
+                delay = min(
+                    self.base_retry_delay * (2 ** retry_count) + random.uniform(0, 1),
+                    self.max_retry_delay
+                )
+                
+                logger.warning(f"Connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                logger.info(f"Retrying in {delay:.2f} seconds...")
+                
                 last_exception = e
                 retry_count += 1
-                await asyncio.sleep(1)
+                await asyncio.sleep(delay)
+                
             except Exception as e:
                 logger.error(f"Unexpected error processing tracks: {str(e)}")
                 await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
@@ -75,7 +112,12 @@ class Fedex():
             "last-event-id": last_id,
             "Cookie": f"_yq_bid={cookie};",
         }
-        async with ClientSession(headers=headers) as session:
+        async with ClientSession(
+            headers=headers, 
+            connector=self.connector, 
+            timeout=self.timeout,
+            trust_env=True
+        ) as session:
             if len(track_numbers) > 40:
                 raise APITooManyElements("API too many elements exception")
             
@@ -83,7 +125,8 @@ class Fedex():
                 async with session.post(
                     url, 
                     data=body, 
-                    proxy=proxy
+                    proxy=proxy,
+                    ssl=self.ssl_context
                 ) as r:
                     if r.status != 200:
                         raise ClientError(f"HTTP error {r.status}")
@@ -107,6 +150,13 @@ class Fedex():
                     
             except asyncio.TimeoutError:
                 raise ClientError("Request timed out")
+            except (ClientConnectorError, ClientOSError) as e:
+                raise ClientError(f"Connection error: {str(e)}")
+    
+    async def cleanup(self):
+        """Clean up resources."""
+        if hasattr(self, 'connector') and self.connector:
+            await self.connector.close()
                 
     async def _save_unchecked_tracks(self, track_numbers: Set[str], filename: str = 'unchecked.txt'):
         if not track_numbers:

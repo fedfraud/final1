@@ -28,18 +28,29 @@ class Utils:
                     return None
                     
                 proxy = random.choice(proxies)
-                return proxy
-                splited = proxy.split(':', maxsplit=5)
                 
-                if splited[0] != 'http':
-                    raise UnsupportedProxyType("Unsupported proxy type. Currently, only http is supported.")
-                
-                if len(splited) == 5:
-                    return f"{splited[0]}://{splited[3]}:{splited[4]}@{splited[1]}:{splited[2]}"
-                elif len(splited) == 3:
-                    return f"{splited[0]}:{splited[1]}:{splited[2]}"
-                else:
+                # If proxy already has proper format (contains ://), return as-is
+                if '://' in proxy:
                     return proxy
+                
+                # Parse proxy string: protocol:host:port[:username:password]
+                parts = proxy.split(':', maxsplit=4)
+                
+                if len(parts) < 3:
+                    # Not enough parts, return as-is and let aiohttp handle it
+                    return proxy
+                
+                protocol, host, port = parts[0], parts[1], parts[2]
+                
+                if protocol not in ['http', 'https']:
+                    raise UnsupportedProxyType("Unsupported proxy type. Currently, only http and https are supported.")
+                
+                # Check if we have username and password (5 parts total)
+                if len(parts) == 5:
+                    username, password = parts[3], parts[4]
+                    return f"{protocol}://{username}:{password}@{host}:{port}"
+                else:
+                    return f"{protocol}://{host}:{port}"
                     
         except Exception as e:
             logger.error(f"Error getting proxy: {str(e)}")

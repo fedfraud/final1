@@ -1,0 +1,1 @@
+2025-06-17 07:23:00 [ERROR]: Error getting proxy: [Errno 2] No such file or directory: '/nonexistent/file.txt'
