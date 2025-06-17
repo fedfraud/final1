@@ -62,17 +62,17 @@ class Fedex():
                 retry_count += 1
                 await self._exponential_backoff(retry_count)
             except (ClientSSLError, ssl.SSLError) as e:
-                logger.warning(f"SSL error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                logger.warning(f"SSL connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
                 last_exception = e
                 retry_count += 1
                 await self._exponential_backoff(retry_count)
             except (ClientConnectorError, ServerDisconnectedError) as e:
-                logger.warning(f"Connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                logger.warning(f"Network connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
                 last_exception = e
                 retry_count += 1
                 await self._exponential_backoff(retry_count)
             except asyncio.TimeoutError as e:
-                logger.warning(f"Timeout error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                logger.warning(f"Request timeout (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
                 last_exception = e
                 retry_count += 1
                 await self._exponential_backoff(retry_count)
@@ -81,7 +81,8 @@ class Fedex():
                 await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
                 return {}
 
-        logger.error(f"Failed after {self.max_retries} attempts. Last error: {str(last_exception)}")
+        logger.error(f"Failed to process tracks after {self.max_retries} attempts. Last error: {str(last_exception)}")
+        logger.info(f"Saving {len(track_numbers)} tracks to unchecked file due to persistent errors")
         await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
         return {}
     

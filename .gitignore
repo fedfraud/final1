@@ -1,0 +1,32 @@
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test files and logs
+*.log
+logs/
+
+# Output files
+strings.txt
+1string.txt
+nevalid.txt
+unchecked.txt
+*_tracks.txt
+*_1strings.txt
+*_unchecked.txt
+*_not_found.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+/tmp/
+temp/
