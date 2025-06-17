@@ -28,7 +28,6 @@ class Utils:
                     return None
                     
                 proxy = random.choice(proxies)
-                return proxy
                 splited = proxy.split(':', maxsplit=5)
                 
                 if splited[0] != 'http':
