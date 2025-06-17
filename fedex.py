@@ -2,9 +2,16 @@ import logging
 import asyncio
 import time
 import random
+import ssl
 from typing import Optional, Dict, List, Set
-from aiohttp import ClientSession, ClientError
-from aiohttp.client_exceptions import ClientProxyConnectionError, ClientHttpProxyError
+from aiohttp import ClientSession, ClientError, TCPConnector, ClientTimeout
+from aiohttp.client_exceptions import (
+    ClientProxyConnectionError, 
+    ClientHttpProxyError,
+    ClientSSLError,
+    ServerDisconnectedError,
+    ClientConnectorError
+)
 from utils import Utils
 from logger import *
 from generate import generate_last_id, get_time_offset
@@ -15,6 +22,27 @@ class Fedex():
         self.utils = Utils()
         self.request_timeout = 30
         self.max_retries = 100
+        self.ssl_context = self._create_ssl_context()
+        self.timeout = ClientTimeout(total=self.request_timeout, connect=10, sock_read=10)
+        
+    def _create_ssl_context(self) -> ssl.SSLContext:
+        """Create SSL context with fallback settings for problematic connections"""
+        ssl_context = ssl.create_default_context()
+        # Allow fallback for certificate verification issues
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        return ssl_context
+        
+    def _create_connector(self) -> TCPConnector:
+        """Create TCP connector with connection pooling and limits"""
+        return TCPConnector(
+            ssl=self.ssl_context,
+            limit=100,
+            limit_per_host=30,
+            ttl_dns_cache=300,
+            use_dns_cache=True,
+            enable_cleanup_closed=True
+        )
 
     async def save_track_data(self, track_numbers: Set[str], proxy_path: Optional[str] = None, 
                             filename: str = None, one_string_filename: str = None, 
@@ -32,10 +60,25 @@ class Fedex():
                     not_found_filename
                 )
             except (ClientProxyConnectionError, ClientHttpProxyError, APIRateLimit) as e:
-                logger.warning(f"Error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                logger.warning(f"Proxy/Rate limit error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
                 last_exception = e
                 retry_count += 1
-                await asyncio.sleep(1)
+                await asyncio.sleep(min(2 ** retry_count, 30))  # Exponential backoff with max 30s
+            except (ClientSSLError, ServerDisconnectedError) as e:
+                logger.warning(f"SSL/Connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                last_exception = e
+                retry_count += 1
+                await asyncio.sleep(min(2 ** retry_count, 30))  # Exponential backoff for SSL errors
+            except ClientConnectorError as e:
+                logger.warning(f"Connection error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                last_exception = e
+                retry_count += 1
+                await asyncio.sleep(min(2 ** retry_count, 30))  # Exponential backoff for connection errors
+            except asyncio.TimeoutError as e:
+                logger.warning(f"Timeout error (attempt {retry_count + 1}/{self.max_retries}): {str(e)}")
+                last_exception = e
+                retry_count += 1
+                await asyncio.sleep(min(2 ** retry_count, 30))  # Exponential backoff for timeouts
             except Exception as e:
                 logger.error(f"Unexpected error processing tracks: {str(e)}")
                 await self._save_unchecked_tracks(track_numbers, unchecked_string_filename)
@@ -75,7 +118,11 @@ class Fedex():
             "last-event-id": last_id,
             "Cookie": f"_yq_bid={cookie};",
         }
-        async with ClientSession(headers=headers) as session:
+        async with ClientSession(
+            headers=headers, 
+            connector=self._create_connector(), 
+            timeout=self.timeout
+        ) as session:
             if len(track_numbers) > 40:
                 raise APITooManyElements("API too many elements exception")
             
